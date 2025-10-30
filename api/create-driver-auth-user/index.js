@@ -123,28 +123,66 @@ module.exports = async function handler(req, res) {
     }
 
     // Insert or update driver record in public.drivers table
-    const { data: driverData, error: driverError } = await supabase
+    // First check if driver already exists
+    const { data: existingDriver, error: checkError } = await supabase
       .from('drivers')
-      .upsert({
-        auth_user_id: authUserId,
-        full_name: fullName,
-        email: email,
-        phone: phone || null,
-        license_number: licenseNumber,
-        company: company || null,
-        vehicle: vehicle || null,
-        registration: registration || null,
-        role: 'driver'
-      }, {
-        onConflict: 'auth_user_id'
-      })
-      .select()
-      .single();
+      .select('id')
+      .eq('auth_user_id', authUserId)
+      .maybeSingle();
+
+    if (checkError) {
+      console.error('Error checking existing driver:', checkError);
+      return res.status(500).json({ error: 'Database error checking email: ' + checkError.message });
+    }
+
+    let driverData = null;
+    let driverError = null;
+
+    if (existingDriver) {
+      // Update existing driver
+      const { data: updateData, error: updateErr } = await supabase
+        .from('drivers')
+        .update({
+          full_name: fullName,
+          email: email,
+          phone: phone || null,
+          license_number: licenseNumber,
+          company: company || null,
+          vehicle: vehicle || null,
+          registration: registration || null,
+          role: 'driver'
+        })
+        .eq('auth_user_id', authUserId)
+        .select()
+        .single();
+
+      driverData = updateData;
+      driverError = updateErr;
+    } else {
+      // Insert new driver
+      const { data: insertData, error: insertErr } = await supabase
+        .from('drivers')
+        .insert({
+          auth_user_id: authUserId,
+          full_name: fullName,
+          email: email,
+          phone: phone || null,
+          license_number: licenseNumber,
+          company: company || null,
+          vehicle: vehicle || null,
+          registration: registration || null,
+          role: 'driver'
+        })
+        .select()
+        .single();
+
+      driverData = insertData;
+      driverError = insertErr;
+    }
 
     if (driverError) {
       console.error('InsertDriver error:', driverError);
-      // Don't fail the request if driver record insert fails - auth user is created
-      // Just log it for now
+      return res.status(500).json({ error: 'Database error creating new user: ' + driverError.message });
     }
 
     return res.status(200).json({ 
