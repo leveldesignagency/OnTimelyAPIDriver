@@ -17,55 +17,19 @@ module.exports = async function handler(req, res) {
   try {
     const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
     const SUPABASE_SERVICE_ROLE_KEY = process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
-    
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-      console.error('Missing Supabase credentials:', {
-        hasUrl: !!SUPABASE_URL,
-        hasKey: !!SUPABASE_SERVICE_ROLE_KEY,
-        keyLength: SUPABASE_SERVICE_ROLE_KEY?.length || 0
-      });
       return res.status(500).json({ error: 'Server missing Supabase credentials' });
-    }
-
-    // Verify service role key format (should be a JWT)
-    if (!SUPABASE_SERVICE_ROLE_KEY.startsWith('eyJ')) {
-      console.error('Service role key appears invalid - should start with "eyJ"');
-      return res.status(500).json({ error: 'Invalid service role key format' });
     }
 
     const payload = req.body || {};
     const { email, password, fullName, phone, licenseNumber, company, vehicle, registration } = payload;
-    
     if (!email || !password || !fullName || !licenseNumber) {
       return res.status(400).json({ error: 'Missing required fields: email, password, fullName, licenseNumber' });
     }
 
-    console.log('Creating Supabase client with Admin API...');
-    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false
-      }
-    });
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    // Test Admin API access by listing users (first page only)
-    console.log('Testing Admin API access...');
-    const { data: testList, error: testError } = await supabase.auth.admin.listUsers({
-      page: 1,
-      perPage: 1
-    });
-    
-    if (testError) {
-      console.error('Admin API access test failed:', testError);
-      return res.status(500).json({ 
-        error: 'Admin API not accessible - check service role key and Supabase Auth settings',
-        details: testError.message || testError
-      });
-    }
-    
-    console.log('Admin API access confirmed');
-
-    // Create the driver auth user
+    // Try to create the user first
     const { data: createData, error: createError } = await supabase.auth.admin.createUser({
       email,
       password,
@@ -87,37 +51,23 @@ module.exports = async function handler(req, res) {
     let authUserId = createData?.user?.id || null;
 
     if (createError) {
-      console.error('CreateDriverUser error:', createError);
-      console.error('Error details:', JSON.stringify(createError, null, 2));
-      
-      // Check for specific error types
-      if (String(createError.message || '').includes('already registered') || 
-          String(createError.message || '').includes('already exists')) {
-        console.log('Driver already registered, proceeding to find and update...');
-      } else if (String(createError.message || '').includes('not allowed') ||
-                 String(createError.message || '').includes('permission') ||
-                 String(createError.message || '').includes('User not allowed')) {
-        return res.status(500).json({ 
-          error: 'User not allowed - check Supabase Auth settings and service role key permissions',
-          details: createError.message
-        });
-      } else {
-        return res.status(500).json({ 
-          error: createError.message || 'Failed to create driver user',
-          details: createError
-        });
+      console.log('CreateUser error:', createError.message);
+      if (!String(createError.message || '').includes('already registered')) {
+        return res.status(500).json({ error: createError.message });
       }
+      console.log('User already registered, proceeding to find and update...');
     }
 
     // If the user already exists, locate and update password/metadata
     if (!authUserId) {
-      console.log('Driver already exists, trying to find and update...');
+      console.log('User already exists, trying to find and update...');
       
       let foundUser = null;
       let page = 1;
       const perPage = 1000;
       
       while (!foundUser && page <= 10) {
+        console.log(`Searching page ${page} for user: ${email}`);
         const { data: list, error: listErr } = await supabase.auth.admin.listUsers({ 
           page, 
           perPage 
@@ -131,11 +81,12 @@ module.exports = async function handler(req, res) {
         foundUser = list.users.find(u => (u.email || '').toLowerCase() === String(email).toLowerCase());
         
         if (foundUser) {
-          console.log(`Found driver user:`, foundUser.id, foundUser.email);
+          console.log(`Found user on page ${page}:`, foundUser.id, foundUser.email);
           break;
         }
         
         if (list.users.length < perPage) {
+          console.log(`Reached end of users list at page ${page}`);
           break;
         }
         
@@ -143,16 +94,14 @@ module.exports = async function handler(req, res) {
       }
       
       if (!foundUser) {
-        return res.status(404).json({ error: 'Driver user not found and could not be created' });
+        console.error('User exists but could not be found:', email);
+        return res.status(500).json({ error: 'User exists but could not be found or created' });
       }
       
-      authUserId = foundUser.id;
-      
-      // Update password and metadata
-      const { error: updateError } = await supabase.auth.admin.updateUserById(authUserId, {
-        password: password,
+      console.log('Found existing user, updating password and metadata...');
+      const { error: updErr } = await supabase.auth.admin.updateUserById(foundUser.id, {
+        password,
         user_metadata: {
-          ...(foundUser.user_metadata || {}),
           provider: 'driver',
           role: 'driver',
           full_name: fullName,
@@ -163,17 +112,14 @@ module.exports = async function handler(req, res) {
           registration: registration || null,
           email_verified: true
         },
-        app_metadata: { 
-          ...(foundUser.app_metadata || {}),
-          provider: 'email', 
-          providers: ['email', 'driver'] 
-        }
+        app_metadata: { provider: 'email', providers: ['email', 'driver'] }
       });
-      
-      if (updateError) {
-        console.error('UpdateDriverUser error:', updateError);
-        return res.status(500).json({ error: updateError.message });
+      if (updErr) {
+        console.error('Error updating user:', updErr);
+        return res.status(500).json({ error: updErr.message });
       }
+      authUserId = foundUser.id;
+      console.log('Successfully updated existing user:', authUserId);
     }
 
     // Insert or update driver record in public.drivers table
@@ -202,18 +148,14 @@ module.exports = async function handler(req, res) {
     }
 
     return res.status(200).json({ 
-      success: true, 
-      user: {
-        id: authUserId,
-        email: email
-      },
+      success: true,
+      auth_user_id: authUserId,
       driver_id: driverData?.id || null,
       message: 'Driver auth user created successfully'
     });
 
-  } catch (error) {
-    console.error('[create-driver-auth-user] error:', error);
-    return res.status(500).json({ error: error.message || 'Internal server error' });
+  } catch (e) {
+    console.error('[create-driver-auth-user] error:', e);
+    return res.status(500).json({ error: 'Internal server error' });
   }
 };
-
