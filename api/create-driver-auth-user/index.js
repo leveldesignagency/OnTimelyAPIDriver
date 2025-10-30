@@ -17,8 +17,20 @@ module.exports = async function handler(req, res) {
   try {
     const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
     const SUPABASE_SERVICE_ROLE_KEY = process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+    
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+      console.error('Missing Supabase credentials:', {
+        hasUrl: !!SUPABASE_URL,
+        hasKey: !!SUPABASE_SERVICE_ROLE_KEY,
+        keyLength: SUPABASE_SERVICE_ROLE_KEY?.length || 0
+      });
       return res.status(500).json({ error: 'Server missing Supabase credentials' });
+    }
+
+    // Verify service role key format (should be a JWT)
+    if (!SUPABASE_SERVICE_ROLE_KEY.startsWith('eyJ')) {
+      console.error('Service role key appears invalid - should start with "eyJ"');
+      return res.status(500).json({ error: 'Invalid service role key format' });
     }
 
     const payload = req.body || {};
@@ -28,7 +40,30 @@ module.exports = async function handler(req, res) {
       return res.status(400).json({ error: 'Missing required fields: email, password, fullName, licenseNumber' });
     }
 
-    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+    console.log('Creating Supabase client with Admin API...');
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
+    });
+
+    // Test Admin API access by listing users (first page only)
+    console.log('Testing Admin API access...');
+    const { data: testList, error: testError } = await supabase.auth.admin.listUsers({
+      page: 1,
+      perPage: 1
+    });
+    
+    if (testError) {
+      console.error('Admin API access test failed:', testError);
+      return res.status(500).json({ 
+        error: 'Admin API not accessible - check service role key and Supabase Auth settings',
+        details: testError.message || testError
+      });
+    }
+    
+    console.log('Admin API access confirmed');
 
     // Create the driver auth user
     const { data: createData, error: createError } = await supabase.auth.admin.createUser({
