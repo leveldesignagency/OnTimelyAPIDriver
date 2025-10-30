@@ -1,0 +1,13 @@
+{
+  "name": "ontimely-api-driver",
+  "version": "1.0.0",
+  "description": "Driver API endpoint for OnTimely Driver Portal",
+  "main": "api/create-driver-auth-user/index.js",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0"
+  },
+  "scripts": {
+    "test": "echo 'Driver API ready'"
+  }
+}
+
