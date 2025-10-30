@@ -52,11 +52,26 @@ module.exports = async function handler(req, res) {
     let authUserId = createData?.user?.id || null;
 
     if (createError) {
-      console.log('CreateDriverUser error:', createError.message);
-      if (!String(createError.message || '').includes('already registered')) {
-        return res.status(500).json({ error: createError.message });
+      console.error('CreateDriverUser error:', createError);
+      console.error('Error details:', JSON.stringify(createError, null, 2));
+      
+      // Check for specific error types
+      if (String(createError.message || '').includes('already registered') || 
+          String(createError.message || '').includes('already exists')) {
+        console.log('Driver already registered, proceeding to find and update...');
+      } else if (String(createError.message || '').includes('not allowed') ||
+                 String(createError.message || '').includes('permission') ||
+                 String(createError.message || '').includes('User not allowed')) {
+        return res.status(500).json({ 
+          error: 'User not allowed - check Supabase Auth settings and service role key permissions',
+          details: createError.message
+        });
+      } else {
+        return res.status(500).json({ 
+          error: createError.message || 'Failed to create driver user',
+          details: createError
+        });
       }
-      console.log('Driver already registered, proceeding to find and update...');
     }
 
     // If the user already exists, locate and update password/metadata
@@ -126,12 +141,38 @@ module.exports = async function handler(req, res) {
       }
     }
 
+    // Insert or update driver record in public.drivers table
+    const { data: driverData, error: driverError } = await supabase
+      .from('drivers')
+      .upsert({
+        auth_user_id: authUserId,
+        full_name: fullName,
+        email: email,
+        phone: phone || null,
+        license_number: licenseNumber,
+        company: company || null,
+        vehicle: vehicle || null,
+        registration: registration || null,
+        role: 'driver'
+      }, {
+        onConflict: 'auth_user_id'
+      })
+      .select()
+      .single();
+
+    if (driverError) {
+      console.error('InsertDriver error:', driverError);
+      // Don't fail the request if driver record insert fails - auth user is created
+      // Just log it for now
+    }
+
     return res.status(200).json({ 
       success: true, 
       user: {
         id: authUserId,
         email: email
       },
+      driver_id: driverData?.id || null,
       message: 'Driver auth user created successfully'
     });
 
