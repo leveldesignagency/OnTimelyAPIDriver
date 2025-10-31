@@ -1,4 +1,5 @@
 const { createClient } = require('@supabase/supabase-js');
+const { Resend } = require('resend');
 
 module.exports = async function handler(req, res) {
   // Basic CORS (allow Electron/desktop app with null origin)
@@ -185,10 +186,77 @@ module.exports = async function handler(req, res) {
       return res.status(500).json({ error: 'Database error creating new user: ' + driverError.message });
     }
 
+    // Generate password reset link so driver can set their password
+    let passwordResetLink = null;
+    try {
+      const { data: linkData, error: linkError } = await supabase.auth.admin.generateLink({
+        type: 'recovery',
+        email: email
+      });
+
+      if (!linkError && linkData?.properties?.action_link) {
+        passwordResetLink = linkData.properties.action_link;
+        console.log('Password reset link generated for driver:', email);
+      } else {
+        console.error('Failed to generate password reset link:', linkError);
+      }
+    } catch (linkErr) {
+      console.error('Error generating password reset link:', linkErr);
+      // Don't fail the request if link generation fails
+    }
+
+    // Send welcome email to driver with password reset link
+    if (passwordResetLink) {
+      try {
+        const RESEND_API_KEY = process.env.RESEND_API_KEY || process.env.VITE_RESEND_API_KEY;
+        if (RESEND_API_KEY) {
+          const resend = new Resend(RESEND_API_KEY);
+          
+          // Get driver portal URL from env or use default
+          const driverPortalUrl = process.env.DRIVER_PORTAL_URL || 'https://driver.ontimely.co.uk';
+          
+          await resend.emails.send({
+            from: 'OnTimely <noreply@ontimely.co.uk>', // Update with your verified sender domain
+            to: email,
+            subject: 'Welcome to OnTimely Driver Portal',
+            html: `
+              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                <h2 style="color: #10b981;">Welcome to OnTimely Driver Portal</h2>
+                <p>Hello ${fullName},</p>
+                <p>Your driver account has been created. To get started, please set your password by clicking the link below:</p>
+                <p style="margin: 30px 0;">
+                  <a href="${passwordResetLink}" 
+                     style="background-color: #10b981; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">
+                    Set Your Password
+                  </a>
+                </p>
+                <p>Or copy and paste this link into your browser:</p>
+                <p style="color: #666; word-break: break-all;">${passwordResetLink}</p>
+                <p style="margin-top: 30px; color: #666; font-size: 14px;">
+                  This link will expire in 24 hours. If you didn't request this account, please ignore this email.
+                </p>
+                <p style="margin-top: 20px; color: #666; font-size: 14px;">
+                  Best regards,<br>The OnTimely Team
+                </p>
+              </div>
+            `
+          });
+          
+          console.log('Welcome email sent successfully to driver:', email);
+        } else {
+          console.log('RESEND_API_KEY not set - skipping email send. Password reset link:', passwordResetLink);
+        }
+      } catch (emailErr) {
+        console.error('Failed to send welcome email to driver:', emailErr);
+        // Don't fail the request if email sending fails - account is still created
+      }
+    }
+
     return res.status(200).json({ 
       success: true,
       auth_user_id: authUserId,
       driver_id: driverData?.id || null,
+      password_reset_link: passwordResetLink, // Include in response for now
       message: 'Driver auth user created successfully'
     });
 

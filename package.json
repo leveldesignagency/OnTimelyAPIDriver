@@ -4,7 +4,8 @@
   "description": "Driver API endpoint for OnTimely Driver Portal",
   "main": "api/create-driver-auth-user/index.js",
   "dependencies": {
-    "@supabase/supabase-js": "^2.39.0"
+    "@supabase/supabase-js": "^2.39.0",
+    "resend": "^6.0.1"
   },
   "scripts": {
     "test": "echo 'Driver API ready'"
